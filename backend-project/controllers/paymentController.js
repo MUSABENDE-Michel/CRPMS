@@ -18,7 +18,13 @@ export const getPayments = async (req, res) => {
     }
 
     const payments = await Payment.find(filter)
-      .populate('serviceRecordId', '-__v')
+      .populate({
+        path: 'serviceRecordId',
+        populate: [
+          { path: 'plateNumber', model: 'Car' },
+          { path: 'serviceCode', model: 'Service' }
+        ]
+      })
       .populate('createdBy', 'username')
       .skip(skip)
       .limit(parseInt(limit))
@@ -37,6 +43,7 @@ export const getPayments = async (req, res) => {
       },
     });
   } catch (error) {
+    console.error('Get payments error:', error);
     res.status(500).json({
       success: false,
       message: 'Error fetching payments',
@@ -49,7 +56,13 @@ export const getPayments = async (req, res) => {
 export const getPaymentById = async (req, res) => {
   try {
     const payment = await Payment.findById(req.params.id)
-      .populate('serviceRecordId')
+      .populate({
+        path: 'serviceRecordId',
+        populate: [
+          { path: 'plateNumber', model: 'Car' },
+          { path: 'serviceCode', model: 'Service' }
+        ]
+      })
       .populate('createdBy', 'username');
 
     if (!payment) {
@@ -64,6 +77,7 @@ export const getPaymentById = async (req, res) => {
       data: payment,
     });
   } catch (error) {
+    console.error('Get payment error:', error);
     res.status(500).json({
       success: false,
       message: 'Error fetching payment',
@@ -85,6 +99,15 @@ export const recordPayment = async (req, res) => {
       });
     }
 
+    // Validate amount is positive
+    const amount = parseFloat(amountPaid);
+    if (isNaN(amount) || amount <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Amount must be greater than 0',
+      });
+    }
+
     // Validate payment date
     const paymentDateObj = new Date(paymentDate);
     if (isNaN(paymentDateObj)) {
@@ -103,21 +126,16 @@ export const recordPayment = async (req, res) => {
       });
     }
 
-    // Validate amount
-    if (amountPaid <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Amount must be positive',
-      });
-    }
-
     const service = serviceRecord.serviceCode;
     const totalAmount = service.servicePrice;
+    const currentPaid = serviceRecord.amountPaid || 0;
+    const remainingBalance = totalAmount - currentPaid;
 
-    if (amountPaid > totalAmount) {
+    // Validate amount doesn't exceed remaining balance
+    if (amount > remainingBalance) {
       return res.status(400).json({
         success: false,
-        message: `Amount paid cannot exceed service price (${totalAmount})`,
+        message: `Amount cannot exceed remaining balance of ${remainingBalance} RWF. Please enter a smaller amount.`,
       });
     }
 
@@ -125,14 +143,14 @@ export const recordPayment = async (req, res) => {
     const payment = await Payment.create({
       serviceRecordId,
       paymentDate: paymentDateObj,
-      amountPaid,
+      amountPaid: amount,
       receivedBy,
       paymentMethod: paymentMethod || 'Cash',
       createdBy: req.session.adminId,
     });
 
     // Update service record
-    const newTotalPaid = serviceRecord.amountPaid + amountPaid;
+    const newTotalPaid = currentPaid + amount;
     let newPaymentStatus = 'Unpaid';
 
     if (newTotalPaid >= totalAmount) {
@@ -146,7 +164,7 @@ export const recordPayment = async (req, res) => {
     serviceRecord.paymentDate = paymentDateObj;
     await serviceRecord.save();
 
-    await logActivity(req.session.adminId, 'CREATE', 'Payment', payment._id, `Payment recorded: ${amountPaid}`);
+    await logActivity(req.session.adminId, 'CREATE', 'Payment', payment._id, `Payment recorded: ${amount} RWF`);
 
     res.status(201).json({
       success: true,
@@ -154,6 +172,7 @@ export const recordPayment = async (req, res) => {
       data: payment,
     });
   } catch (error) {
+    console.error('Record payment error:', error);
     res.status(500).json({
       success: false,
       message: 'Error recording payment',
@@ -179,39 +198,54 @@ export const updatePayment = async (req, res) => {
 
     // Get service record
     const serviceRecord = await ServiceRecord.findById(payment.serviceRecordId).populate('serviceCode');
+    if (!serviceRecord) {
+      return res.status(404).json({
+        success: false,
+        message: 'Service record not found',
+      });
+    }
+    
     const service = serviceRecord.serviceCode;
+    const totalAmount = service.servicePrice;
 
-    // If amount changes, validate
-    if (amountPaid !== undefined && amountPaid !== payment.amountPaid) {
-      const totalAmount = service.servicePrice;
-      const otherPaymentsAmount = await Payment.aggregate([
-        { $match: { serviceRecordId: payment.serviceRecordId, _id: { $ne: payment._id } } },
-        { $group: { _id: null, total: { $sum: '$amountPaid' } } },
-      ]);
+    // Get all other payments
+    const otherPayments = await Payment.find({ 
+      serviceRecordId: payment.serviceRecordId, 
+      _id: { $ne: payment._id } 
+    });
+    const otherPaymentsTotal = otherPayments.reduce((sum, p) => sum + p.amountPaid, 0);
 
-      const otherPaymentsTotal = otherPaymentsAmount[0]?.total || 0;
-      const newTotal = otherPaymentsTotal + (amountPaid || payment.amountPaid);
-
+    // Calculate new amount
+    let newAmount = payment.amountPaid;
+    if (amountPaid !== undefined) {
+      newAmount = parseFloat(amountPaid);
+      if (isNaN(newAmount) || newAmount < 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Amount must be positive',
+        });
+      }
+      
+      const newTotal = otherPaymentsTotal + newAmount;
       if (newTotal > totalAmount) {
         return res.status(400).json({
           success: false,
-          message: `Total payments cannot exceed service price (${totalAmount})`,
+          message: `Total payments cannot exceed service price (${totalAmount} RWF)`,
         });
       }
     }
 
     // Update fields
     if (paymentDate) payment.paymentDate = new Date(paymentDate);
-    if (amountPaid !== undefined) payment.amountPaid = amountPaid;
+    if (amountPaid !== undefined) payment.amountPaid = newAmount;
     if (receivedBy) payment.receivedBy = receivedBy;
     if (paymentMethod) payment.paymentMethod = paymentMethod;
 
     await payment.save();
 
     // Recalculate service record status
-    const payments = await Payment.find({ serviceRecordId: payment.serviceRecordId });
-    const totalPaid = payments.reduce((sum, p) => sum + p.amountPaid, 0);
-    const totalAmount = service.servicePrice;
+    const allPayments = await Payment.find({ serviceRecordId: payment.serviceRecordId });
+    const totalPaid = allPayments.reduce((sum, p) => sum + p.amountPaid, 0);
 
     let newPaymentStatus = 'Unpaid';
     if (totalPaid >= totalAmount) {
@@ -232,6 +266,7 @@ export const updatePayment = async (req, res) => {
       data: payment,
     });
   } catch (error) {
+    console.error('Update payment error:', error);
     res.status(500).json({
       success: false,
       message: 'Error updating payment',
@@ -284,6 +319,7 @@ export const deletePayment = async (req, res) => {
       message: 'Payment deleted successfully',
     });
   } catch (error) {
+    console.error('Delete payment error:', error);
     res.status(500).json({
       success: false,
       message: 'Error deleting payment',
@@ -313,6 +349,7 @@ export const getDailyRevenue = async (req, res) => {
       data: payments,
     });
   } catch (error) {
+    console.error('Daily revenue error:', error);
     res.status(500).json({
       success: false,
       message: 'Error fetching daily revenue',
@@ -325,13 +362,16 @@ export const getDailyRevenue = async (req, res) => {
 export const getMonthlyRevenue = async (req, res) => {
   try {
     const { month, year } = req.query;
-    const date = new Date(year || new Date().getFullYear(), month || new Date().getMonth(), 1);
-    const nextMonth = new Date(date.getFullYear(), date.getMonth() + 1, 1);
+    const selectedMonth = month ? parseInt(month) - 1 : new Date().getMonth();
+    const selectedYear = year ? parseInt(year) : new Date().getFullYear();
+    
+    const startDate = new Date(selectedYear, selectedMonth, 1);
+    const endDate = new Date(selectedYear, selectedMonth + 1, 1);
 
     const payments = await Payment.aggregate([
       {
         $match: {
-          paymentDate: { $gte: date, $lt: nextMonth },
+          paymentDate: { $gte: startDate, $lt: endDate },
         },
       },
       {
@@ -352,6 +392,7 @@ export const getMonthlyRevenue = async (req, res) => {
       data: payments,
     });
   } catch (error) {
+    console.error('Monthly revenue error:', error);
     res.status(500).json({
       success: false,
       message: 'Error fetching monthly revenue',

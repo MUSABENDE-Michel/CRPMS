@@ -41,6 +41,7 @@ export const getServiceRecords = async (req, res) => {
       },
     });
   } catch (error) {
+    console.error('Get service records error:', error);
     res.status(500).json({
       success: false,
       message: 'Error fetching service records',
@@ -69,6 +70,7 @@ export const getServiceRecordById = async (req, res) => {
       data: record,
     });
   } catch (error) {
+    console.error('Get service record error:', error);
     res.status(500).json({
       success: false,
       message: 'Error fetching service record',
@@ -77,24 +79,16 @@ export const getServiceRecordById = async (req, res) => {
   }
 };
 
-// Create service record
+// Create service record - UPDATED: amountPaid = 0, paymentStatus = 'Unpaid'
 export const createServiceRecord = async (req, res) => {
   try {
-    const { serviceDate, plateNumber, serviceCode, amountPaid, paymentDate, paymentStatus, doneBy } = req.body;
+    const { serviceDate, plateNumber, serviceCode, paymentDate, doneBy } = req.body;
 
     // Validation
-    if (!serviceDate || !plateNumber || !serviceCode || amountPaid === undefined || !paymentDate || !paymentStatus || !doneBy) {
+    if (!serviceDate || !plateNumber || !serviceCode || !paymentDate || !doneBy) {
       return res.status(400).json({
         success: false,
         message: 'All fields are required',
-      });
-    }
-
-    // Validate payment status
-    if (!['Paid', 'Partial', 'Unpaid'].includes(paymentStatus)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid payment status',
       });
     }
 
@@ -126,21 +120,14 @@ export const createServiceRecord = async (req, res) => {
       });
     }
 
-    // Validate amount paid
-    if (amountPaid < 0 || amountPaid > service.servicePrice) {
-      return res.status(400).json({
-        success: false,
-        message: `Amount paid must be between 0 and ${service.servicePrice}`,
-      });
-    }
-
+    // Create record with amountPaid = 0 and paymentStatus = 'Unpaid'
     const record = await ServiceRecord.create({
       serviceDate: serviceDateObj,
       plateNumber,
       serviceCode,
-      amountPaid,
+      amountPaid: 0,
       paymentDate: paymentDateObj,
-      paymentStatus,
+      paymentStatus: 'Unpaid',
       doneBy,
       createdBy: req.session.adminId,
     });
@@ -159,6 +146,7 @@ export const createServiceRecord = async (req, res) => {
       data: record,
     });
   } catch (error) {
+    console.error('Create service record error:', error);
     res.status(500).json({
       success: false,
       message: 'Error creating service record',
@@ -220,6 +208,7 @@ export const updateServiceRecord = async (req, res) => {
       data: record,
     });
   } catch (error) {
+    console.error('Update service record error:', error);
     res.status(500).json({
       success: false,
       message: 'Error updating service record',
@@ -251,6 +240,7 @@ export const deleteServiceRecord = async (req, res) => {
       message: 'Service record deleted successfully',
     });
   } catch (error) {
+    console.error('Delete service record error:', error);
     res.status(500).json({
       success: false,
       message: 'Error deleting service record',
@@ -286,6 +276,7 @@ export const getCarServiceHistory = async (req, res) => {
       },
     });
   } catch (error) {
+    console.error('Get car service history error:', error);
     res.status(500).json({
       success: false,
       message: 'Error fetching service history',
@@ -314,6 +305,7 @@ export const getPendingPayments = async (req, res) => {
       data: records,
     });
   } catch (error) {
+    console.error('Get pending payments error:', error);
     res.status(500).json({
       success: false,
       message: 'Error fetching pending payments',
